@@ -51,3 +51,12 @@ Meshes
 
 FBX Checker: Can tell whether the mesh is from a model, or something else.
 FBX Exporter (Require to install FBX Exporter from Package Manager): If the mesh is not from FBX, now there is a button to generate an FBX for the mesh in the same folder where that mesh is. 
+
+![Advanced Resource Checker - Updated resource checker for more functions](https://github.com/Nayatrei/AdvancedResourceChecker/assets/36463159/1c83a2a9-db4c-44fb-9ab8-822cdc2d962e)
+
+![Advanced Resource Checker - Updated resource checker for more functions Materials](https://github.com/Nayatrei/AdvancedResourceChecker/assets/36463159/6aca8d53-a890-43e9-88c1-50e70a827b0f)
+
+![Advanced Resource Checker - Updated resource checker for more functions - Shader](https://github.com/Nayatrei/AdvancedResourceChecker/assets/36463159/6d198eee-660c-4767-99d2-209fa1cb180a)
+
+![Advanced Resource Checker - Updated resource checker for more functions - meshes](https://github.com/Nayatrei/AdvancedResourceChecker/assets/36463159/36a77225-b32d-4800-9946-b81d7eef6e1d)
+

@@ -1,4 +1,4 @@
-// Advanced Resource Checker
+﻿// Advanced Resource Checker
 
 using System;
 using System.Linq;
@@ -7,8 +7,12 @@ using UnityEngine;
 using UnityEngine.UI;
 #if UNITY_EDITOR
 using UnityEditor;
+#endif
+
+#if UNITY_EDITOR && ENABLE_FBX_EXPORTER
 using UnityEditor.Formats.Fbx.Exporter;
 #endif
+
 using System.Collections.Generic;
 using System.Reflection;
 using Object = UnityEngine.Object;
@@ -31,6 +35,8 @@ public class TextureDetails : IEquatable<TextureDetails>
 	public bool instance;
 	public bool isgui;
     public bool hasAlpha;
+
+
 
 	public TextureDetails()
 	{
@@ -98,21 +104,65 @@ public class MissingGraphic{
 public class AdvancedResourceChecker : EditorWindow {
 
 
-	string[] inspectToolbarStrings = {"Textures", "Materials","Shader","Meshes"};
-	string[] inspectToolbarStrings2 = {"Textures", "Materials","Shader","Meshes", "Missing"};
+	string[] inspectToolbarStrings = { "Textures", "Materials", "Shaders", "Meshes", "Particles", "Audio" };
 
 	enum InspectType 
 	{
-		Textures,Materials,Shaders,Meshes,Missing
+		Textures,Materials,Shaders,Meshes,Particles,Audio 
 	};
 
-	bool IncludeDisabledObjects=true;
+	enum MaxTextureSize
+	{
+		_4096 = 4096,
+		_2048 = 2048,
+		_1024 = 1024,
+		_512 = 512,
+		_256 = 256,
+		_128 = 128
+	}
+
+	public enum TextureSortOption
+	{
+		Name,               // Texture name A-Z
+		MemoryUsage,        // Total memory size (KB)
+		Resolution,         // Width x Height
+		Format,             // Compression format like ASTC, ETC2, etc.
+		AlphaChannel,       // Has alpha or not
+		TextureType         // Texture2D, NormalMap, etc.
+	}
+
+	private TextureSortOption sortOption = TextureSortOption.Name;
+	private string[] sortLabels = new string[]
+	{
+	"Name (A–Z)",
+	"Memory Usage",
+	"Resolution",
+	"Format",
+	"Has Alpha",
+	"Texture Type"
+	};
+
+	private bool isSortAscending = false;
+
+	private Dictionary<Texture, MaxTextureSize> sizeOverrides = new Dictionary<Texture, MaxTextureSize>();
+
+	public enum ShaderRiskLevel
+	{
+		None,
+		Low,
+		Moderate,
+		High
+	}
+
+
+	bool IncludeDisabledObjects =true;
 	bool IncludeSpriteAnimations=true;
 	bool IncludeScriptReferences=true;
 	bool IncludeGuiElements=true;
 	bool thingsMissing = false;
 
 	InspectType ActiveInspectType=InspectType.Textures;
+	MaxTextureSize currentMaxSize = MaxTextureSize._2048;
 
 	float ThumbnailWidth=40;
 	float ThumbnailHeight=40;
@@ -127,7 +177,7 @@ public class AdvancedResourceChecker : EditorWindow {
 	Vector2 materialListScrollPos=new Vector2(0,0);
     Vector2 shaderListScrollPos = new Vector2(0, 0);
     Vector2 meshListScrollPos=new Vector2(0,0);
-	Vector2 missingListScrollPos = new Vector2 (0,0);
+
 
 	int TotalTextureMemory=0;
 	int TotalMeshVertices=0;
@@ -141,7 +191,7 @@ public class AdvancedResourceChecker : EditorWindow {
 
 	bool collectedInPlayingMode;
 
-	[MenuItem ("Tools/Advanced Resource Checker")]
+	[MenuItem ("Tools/AdvancedToolkit/Resource Checker")]
 	static void Init ()
 	{  
 		AdvancedResourceChecker window = (AdvancedResourceChecker) EditorWindow.GetWindow (typeof (AdvancedResourceChecker));
@@ -174,18 +224,27 @@ public class AdvancedResourceChecker : EditorWindow {
 			EditorGUI.HelpBox (new Rect(8,75,300,25),"Some GameObjects are missing graphical elements.", MessageType.Error);
 		}
 		GUILayout.BeginHorizontal();
-		GUILayout.Label("Textures "+ActiveTextures.Count+" - "+FormatSizeString(TotalTextureMemory));
-		GUILayout.Label("Materials "+ActiveMaterials.Count);
-        GUILayout.Label("Shaders  " + shaderCount);
-        GUILayout.Label("Meshes "+ActiveMeshDetails.Count+" - "+TotalMeshVertices+" verts");
-		GUILayout.EndHorizontal();
-		if (thingsMissing == true) {
-			ActiveInspectType = (InspectType)GUILayout.Toolbar ((int)ActiveInspectType, inspectToolbarStrings2);
-		} else {
-			ActiveInspectType = (InspectType)GUILayout.Toolbar ((int)ActiveInspectType, inspectToolbarStrings);
-		}
+		GUILayout.Label("Textures " + ActiveTextures.Count + " - " + FormatSizeString(TotalTextureMemory));
+		GUILayout.Label("Materials " + ActiveMaterials.Count);
+		GUILayout.Label("Shaders " + shaderCount);
+		GUILayout.Label("Meshes " + ActiveMeshDetails.Count + " - " + TotalMeshVertices + " verts");
 
-		ctrlPressed=Event.current.control || Event.current.command;
+		// Add particle and audio system counts
+		int particleCount = FindObjects<ParticleSystem>().Length;
+		int audioCount = FindObjects<AudioSource>().Length;
+		GUILayout.Label("Particles " + particleCount);
+		GUILayout.Label("Audio Sources " + audioCount);
+
+		GUILayout.EndHorizontal();
+
+
+		ctrlPressed = Event.current.control || Event.current.command;
+
+		GUILayout.Space(10);
+		int selectedTab = (int)ActiveInspectType;
+		selectedTab = GUILayout.Toolbar(selectedTab, inspectToolbarStrings);
+		ActiveInspectType = (InspectType)selectedTab;
+		GUILayout.Space(10);
 
 		switch (ActiveInspectType)
 		{
@@ -201,10 +260,16 @@ public class AdvancedResourceChecker : EditorWindow {
         case InspectType.Meshes:
 			ListMeshes();
 			break;
-		case InspectType.Missing:
-			ListMissing();
+		case InspectType.Particles:
+			ListParticles();
+			break;
+		case InspectType.Audio:
+			ListAudios();
 			break;
 		}
+
+
+
 	}
 
 	private void RemoveDestroyedResources()
@@ -214,8 +279,6 @@ public class AdvancedResourceChecker : EditorWindow {
 			ActiveTextures.Clear();
 			ActiveMaterials.Clear();
 			ActiveMeshDetails.Clear();
-			MissingObjects.Clear ();
-			thingsMissing = false;
 			collectedInPlayingMode = Application.isPlaying;
 		}
 		
@@ -347,8 +410,6 @@ public class AdvancedResourceChecker : EditorWindow {
 		return 0;
 	}
 
-
-
     void SelectObject(Object selectedObject,bool append)
 	{
 		if (append)
@@ -385,403 +446,133 @@ public class AdvancedResourceChecker : EditorWindow {
         else Selection.objects = selectedMaterials.ToArray();
     }
 
-    void ListTextures()
+	void ListTextures()
 	{
 		textureListScrollPos = EditorGUILayout.BeginScrollView(textureListScrollPos);
-        List<Object> MipMapTextures = new List<Object>();
-        List<Object> SuperLargeTextures = new List<Object>(); //Store Over 2048 Textures
-        List<Object> ExtraLargeTextures = new List<Object>(); //Store 2048 Textures
-        List<Object> LargeTextures = new List<Object>(); //Store 1024 Textures
-        List<Object> MediumTextures = new List<Object>(); //Store 512 Textures
-        List<Object> SmallTextures = new List<Object>(); //Store Below 512 Textures
 
-        GUILayout.BeginHorizontal();
-        if (GUILayout.Button("Sort By Name", GUILayout.Width(200)))
-        {
-            SortTextureName();
-        }
+		EditorGUILayout.BeginHorizontal();
+		GUILayout.Label("Sort By", GUILayout.Width(50));
 
-        if (GUILayout.Button("Sort By Format", GUILayout.Width(200)))
-        {
-            SortTextureFormat();
-        }
+		EditorGUI.BeginChangeCheck();
+		selectedSortOption = (TextureSortOption)EditorGUILayout.EnumPopup(selectedSortOption, GUILayout.Width(180));
+		bool ascending = GUILayout.Toggle(isSortAscending, isSortAscending ? "▲" : "▼", "Button", GUILayout.Width(30));
+		if (EditorGUI.EndChangeCheck() || ascending != isSortAscending)
+		{
+			isSortAscending = ascending;
+			ApplyTextureSort(); // Re-apply sort whenever change occurs
+		}
+		GUILayout.FlexibleSpace();
+		EditorGUILayout.EndHorizontal();
 
-        if (GUILayout.Button("Sort By Size", GUILayout.Width(200)))
-        {
-            SortTextureSize();
-        }
 
-        if (GUILayout.Button("Sort By Alpha", GUILayout.Width(200)))
-        {
-            SortTextureAlpha();
-        }
+		float viewWidth = EditorGUIUtility.currentViewWidth;
+		float padding = 20f;
+		int totalColumns = 5;
+		float columnWidth = (viewWidth - ThumbnailWidth - padding) / (totalColumns - 1);
 
-        GUILayout.EndHorizontal();
+		foreach (TextureDetails tDetails in ActiveTextures)
+		{
+			GUILayout.BeginHorizontal();
 
-        if (ActiveTextures.Count > 0)
-        {
-            EditorGUILayout.Space();
-            GUILayout.BeginHorizontal();
-            //GUILayout.Box(" ",GUILayout.Width(ThumbnailWidth),GUILayout.Height(ThumbnailHeight));
-            if (GUILayout.Button("Select All", GUILayout.Width(100)))
-            {
-                List<Object> AllTextures = new List<Object>();
-                foreach (TextureDetails tDetails in ActiveTextures) AllTextures.Add(tDetails.texture);
-                SelectObjects(AllTextures, ctrlPressed);
-            }
+			// COLUMN 1: Thumbnail
+			Texture previewTex = tDetails.texture;
+			if (previewTex is Texture2DArray || previewTex is Cubemap)
+				previewTex = AssetPreview.GetMiniThumbnail(previewTex);
+			GUILayout.Box(previewTex, GUILayout.Width(ThumbnailWidth), GUILayout.Height(ThumbnailHeight));
 
-            if (GUILayout.Button("Select 2048+", GUILayout.Width(100)))
-            {
-                SelectObjects(SuperLargeTextures, ctrlPressed);
-            }
-            if (GUILayout.Button("Select 2048", GUILayout.Width(100)))
-            {
-                SelectObjects(ExtraLargeTextures, ctrlPressed);
-            }
-            if (GUILayout.Button("Select 1024", GUILayout.Width(100)))
-            {
-                SelectObjects(LargeTextures, ctrlPressed);
-            }
-            if (GUILayout.Button("Select 512", GUILayout.Width(100)))
-            {
-                SelectObjects(MediumTextures, ctrlPressed);
-            }
-            if (GUILayout.Button("Select 512-", GUILayout.Width(100)))
-            {
-                SelectObjects(SmallTextures, ctrlPressed);
-            }
-            EditorGUILayout.EndHorizontal();
-        }
-        foreach (TextureDetails tDetails in ActiveTextures)
-		{			
+			// COLUMN 2: Name + Usage
+			GUILayout.BeginVertical(GUILayout.Width(columnWidth));
 
-			GUILayout.BeginHorizontal ();
-            
-			Texture tex =tDetails.texture;			
-			if(tDetails.texture.GetType() == typeof(Texture2DArray) || tDetails.texture.GetType() == typeof(Cubemap)){
-				tex = AssetPreview.GetMiniThumbnail(tDetails.texture);
-			}
-			GUILayout.Box(tex, GUILayout.Width(ThumbnailWidth), GUILayout.Height(ThumbnailHeight));
-
-			if (tDetails.instance == true)
-				GUI.color = new Color (0.8f, 0.8f, defColor.b, 1.0f);
-			if (tDetails.isgui == true)
-				GUI.color = new Color (defColor.r, 0.95f, 0.8f, 1.0f);
-			if (tDetails.isSky)
-				GUI.color = new Color (0.9f, defColor.g, defColor.b, 1.0f);
-
-            GUILayout.BeginVertical();
-
-            if (GUILayout.Button(tDetails.texture.name,GUILayout.Width(158)))
+			if (GUILayout.Button(tDetails.texture.name, GUILayout.Width(columnWidth)))
 			{
-				SelectObject(tDetails.texture,ctrlPressed);
+				SelectObject(tDetails.texture, ctrlPressed);
+			}
+
+			GUILayout.Label($"{tDetails.FoundInMaterials.Count} Mats, {tDetails.FoundInRenderers.Count} Renderers");
+
+			GUILayout.EndVertical();
+
+			// COLUMN 3: Format Info
+			GUILayout.BeginVertical(GUILayout.Width(columnWidth));
+
+			TextureImporter importer = AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(tDetails.texture)) as TextureImporter;
+			if (importer != null)
+			{
+				// COLUMN 3A: Format Info
+				string ext = Path.GetExtension(AssetDatabase.GetAssetPath(tDetails.texture)).ToUpper().TrimStart('.');
+				string formatLabel = $"Format: {ext}\nMemory: {FormatSizeString(tDetails.memSizeKB)}\nUnity Format: {tDetails.format}";
+				EditorGUILayout.HelpBox(formatLabel, MessageType.None);
+
+			}
+			else
+			{
+				GUILayout.Label("Import settings not available");
+			}
+
+			GUILayout.EndVertical();
+
+			// COLUMN 4: Max Texture Size
+			GUILayout.BeginVertical(GUILayout.Width(columnWidth));
+
+			if (importer != null)
+			{
+				TextureImporter textureImporterSetting = importer;
+
+				MaxTextureSize currentSize = (MaxTextureSize)textureImporterSetting.maxTextureSize;
+				MaxTextureSize selectedSize;
+
+				// Check override first
+				if (!sizeOverrides.TryGetValue(tDetails.texture, out selectedSize))
+					selectedSize = currentSize;
+
+				EditorGUILayout.HelpBox($"Current Resolution: {tDetails.texture.width} x {tDetails.texture.height}", MessageType.None);
+
+				GUILayout.BeginHorizontal();
+				selectedSize = (MaxTextureSize)EditorGUILayout.EnumPopup(selectedSize);
+				sizeOverrides[tDetails.texture] = selectedSize;
+
+					if (GUILayout.Button("Change Size"))
+					{
+						textureImporterSetting.maxTextureSize = (int)selectedSize;
+						AssetDatabase.ImportAsset(AssetDatabase.GetAssetPath(tDetails.texture), ImportAssetOptions.ForceUpdate);
+					}
+				
+				GUILayout.EndHorizontal();
 			}
 
 
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Uses- ", GUILayout.Width(35));
-            if (GUILayout.Button(tDetails.FoundInMaterials.Count + " Mats", GUILayout.Width(55)))
-            {
-                SelectObjects(tDetails.FoundInMaterials, ctrlPressed);
-            }
 
-            HashSet<Object> FoundObjects = new HashSet<Object>();
-            foreach (Renderer renderer in tDetails.FoundInRenderers) FoundObjects.Add(renderer.gameObject);
-            foreach (Animator animator in tDetails.FoundInAnimators) FoundObjects.Add(animator.gameObject);
-            foreach (Graphic graphic in tDetails.FoundInGraphics) FoundObjects.Add(graphic.gameObject);
-            foreach (Button button in tDetails.FoundInButtons) FoundObjects.Add(button.gameObject);
-            foreach (MonoBehaviour script in tDetails.FoundInScripts) FoundObjects.Add(script.gameObject);
-            if (GUILayout.Button(FoundObjects.Count + " GOs", GUILayout.Width(60)))
-            {
-                SelectObjects(new List<Object>(FoundObjects), ctrlPressed);
-            }
-            GUILayout.EndHorizontal();
-            GUILayout.Label("Texture Import Setting: ", GUILayout.Width(150));
-            GUILayout.EndVertical();
-
-            TextureImporter importer = AssetImporter.GetAtPath(AssetDatabase.GetAssetPath(tDetails.texture)) as TextureImporter;
-            string mobileFormat = "";
-            int maxSize = 0;
-            string sizeLabel = "";
-
-            if (importer != null)
-            {
-                TextureImporterPlatformSettings androidSettings = importer.GetPlatformTextureSettings("Android");
-                TextureImporterPlatformSettings iOSSettings = importer.GetPlatformTextureSettings("iPhone");
-
-
-                string androidfileformat = "Android Max Size: " + androidSettings.maxTextureSize + "  Format:  " + androidSettings.format;
-
-                if (!androidSettings.overridden)
-                {
-                    androidfileformat = "Android: Same as Default ";
-                }
-
-                string iOSfileformat = "iPhone Max Size: " + iOSSettings.maxTextureSize + "  Format:  " + iOSSettings.format;
-
-                if (!iOSSettings.overridden)
-                {
-                    iOSfileformat = "iPhone: Same as Default";
-                }
-                mobileFormat = androidfileformat + "\n" + iOSfileformat;
-                maxSize = importer.maxTextureSize;
-                sizeLabel = "Change Max Size (Default: " + maxSize + ")";
-            }
+			GUILayout.EndVertical();
 
 
 
-            if (importer != null && importer.textureType == TextureImporterType.Default)
-            {
-                if (importer.alphaSource == TextureImporterAlphaSource.FromInput && importer.DoesSourceTextureHaveAlpha())
-                {
-                    tDetails.hasAlpha = true;
-                }
-                else
-                {
-                    tDetails.hasAlpha = false;
-                }
+			GUILayout.BeginVertical(GUILayout.Width(columnWidth));
 
-                if (importer.DoesSourceTextureHaveAlpha())
-                {
-                    if(importer.alphaSource != TextureImporterAlphaSource.FromInput)
-                    {
-                        tDetails.hasAlphaWrongSetting = true;
-                    }
-                }
-            }
-      
-            string alphaCheckBoolean = tDetails.hasAlpha ? "+ Alpha" : "";
+			// Material references
+			if (GUILayout.Button($"Materials ({tDetails.FoundInMaterials.Count})", GUILayout.Width(columnWidth)))
+			{
+				SelectObjects(tDetails.FoundInMaterials, ctrlPressed);
+			}
+			HashSet<Object> FoundObjects = new HashSet<Object>();
+			foreach (Renderer renderer in tDetails.FoundInRenderers) FoundObjects.Add(renderer.gameObject);
+			foreach (Animator animator in tDetails.FoundInAnimators) FoundObjects.Add(animator.gameObject);
+			foreach (Graphic graphic in tDetails.FoundInGraphics) FoundObjects.Add(graphic.gameObject);
+			foreach (Button button in tDetails.FoundInButtons) FoundObjects.Add(button.gameObject);
+			foreach (MonoBehaviour script in tDetails.FoundInScripts) FoundObjects.Add(script.gameObject);
+			if (GUILayout.Button($"GameObjects ({FoundObjects.Count})", GUILayout.Width(columnWidth)))
+			{
+				SelectObjects(new List<Object>(FoundObjects), ctrlPressed);
+			}
 
+			GUILayout.EndVertical();
 
-            GUI.color = defColor;
-            string textureAssetPath = AssetDatabase.GetAssetPath(tex);
-            string fileformat;
-            string cubemapDetail;
-            bool streamingSettingCheck = false;
-            bool generateMipmap = false;
-            bool readWriteBoolean = false;
+		GUILayout.EndHorizontal();
+		}
 
-
-
-
-
-
-
-            if (importer != null && importer.textureType == TextureImporterType.NormalMap)
-            {
-                fileformat = Path.GetExtension(textureAssetPath).ToUpper().TrimStart('.') + " - Normal Map";
-                fileformat += "\n" + FormatSizeString(tDetails.memSizeKB) + " - " + tDetails.format;
-            }
-            else
-            {
-                fileformat = Path.GetExtension(textureAssetPath).ToUpper().TrimStart('.') + " " + alphaCheckBoolean;
-                fileformat += "\n" + FormatSizeString(tDetails.memSizeKB) + " - " + tDetails.format;
-            }
-
-
-
-            TextureImporter textureImporterSetting = AssetImporter.GetAtPath(textureAssetPath) as TextureImporter;
-
-            cubemapDetail = "Size: (" + tDetails.texture.width + " x" + tDetails.texture.height;
-            cubemapDetail += ")\n Cubemap  " + "\n" + FormatSizeString(tDetails.memSizeKB) + " - " + tDetails.format;
-
-
-
-            if (tDetails.isCubeMap)
-            {
-                GUILayout.Label(cubemapDetail, GUILayout.Width(150));
-            }
-            else
-            {
-                GUILayout.BeginVertical();
-                GUILayout.Label(fileformat, GUILayout.Width(150));
-                if (textureImporterSetting != null)
-                {
-                    readWriteBoolean = textureImporterSetting.isReadable;
-                    string readWriteBoolString = readWriteBoolean ? "O" : "X";
-
-                    if (GUILayout.Button("Read Write: " + readWriteBoolString, GUILayout.Width(130)))
-                    {
-                        textureImporterSetting.isReadable = !textureImporterSetting.isReadable;
-                        AssetDatabase.ImportAsset(textureAssetPath, ImportAssetOptions.ForceUpdate);
-                    }
-
-                }
-                GUILayout.EndVertical();
-            }
-
-
-
-            if (importer != null)
-            {
-                GUILayout.BeginVertical();
-                GUILayout.Label("Texture Size: (" + tDetails.texture.width + " x" + tDetails.texture.height + ")");
-                GUILayout.Label(sizeLabel, GUILayout.Width(200));
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("-", GUILayout.Width(10));
-                if (GUILayout.Button("2048", GUILayout.Width(45)))
-                {
-                    textureImporterSetting.maxTextureSize = 2048;
-                    AssetDatabase.ImportAsset(textureAssetPath, ImportAssetOptions.ForceUpdate);
-                }
-                if (GUILayout.Button("1024", GUILayout.Width(40)))
-                {
-                    textureImporterSetting.maxTextureSize = 1024;
-                    AssetDatabase.ImportAsset(textureAssetPath, ImportAssetOptions.ForceUpdate);
-                }
-
-                if (GUILayout.Button("512", GUILayout.Width(35)))
-                {
-                    textureImporterSetting.maxTextureSize = 512;
-                    AssetDatabase.ImportAsset(textureAssetPath, ImportAssetOptions.ForceUpdate);
-                }
-                if (GUILayout.Button("256", GUILayout.Width(35)))
-                {
-                    textureImporterSetting.maxTextureSize = 256;
-                    AssetDatabase.ImportAsset(textureAssetPath, ImportAssetOptions.ForceUpdate);
-                }
-                GUILayout.Label("-", GUILayout.Width(10));
-                GUILayout.EndHorizontal();
-                GUILayout.EndVertical();
-
-
-
-
-                if (textureImporterSetting != null)
-                {
-                    GUILayout.BeginVertical();
-                    GUILayout.Label(mobileFormat, GUILayout.Width(300));
-                    GUILayout.BeginHorizontal();
-                    streamingSettingCheck = textureImporterSetting.streamingMipmaps;
-                    generateMipmap = textureImporterSetting.mipmapEnabled;
-                    string generateMipMapBoolean = generateMipmap ? "O" : "X";
-                    string streamingSettingCheckBoolean = streamingSettingCheck ? "O" : "X";
-                    string streamingSetting = " " + streamingSettingCheckBoolean;
-                    if (tDetails.hasAlphaWrongSetting)
-                    {
-                        if (GUILayout.Button("Fix Alpha Setting: " + " Input Texture Alpha", GUILayout.Width(260)))
-                        {
-                            // Set alpha source to input texture alpha
-                            textureImporterSetting.alphaSource = TextureImporterAlphaSource.FromInput;
-                            AssetDatabase.ImportAsset(textureAssetPath, ImportAssetOptions.ForceUpdate);
-                            CheckResources();
-                        }
-                    }
-                    else
-                    {
-
-
-                        if (GUILayout.Button("Generate Mipmap: " + generateMipMapBoolean, GUILayout.Width(130)))
-                        {
-                            textureImporterSetting.mipmapEnabled = !textureImporterSetting.mipmapEnabled;
-                            AssetDatabase.ImportAsset(textureAssetPath, ImportAssetOptions.ForceUpdate);
-                        }
-
-                        if (GUILayout.Button("Stream Mipmap: " + streamingSetting, GUILayout.Width(130)))
-                        {
-                            textureImporterSetting.streamingMipmaps = !textureImporterSetting.streamingMipmaps;
-                            AssetDatabase.ImportAsset(textureAssetPath, ImportAssetOptions.ForceUpdate);
-                        }
-                    }
-
-
-                    if (tDetails.texture.width > 2048)
-                        SuperLargeTextures.Add(tDetails.texture);
-
-                    if (tDetails.texture.width == 2048)
-                        ExtraLargeTextures.Add(tDetails.texture);
-
-                    if (tDetails.texture.width == 1024)
-                        LargeTextures.Add(tDetails.texture);
-
-                    if (tDetails.texture.width == 512)
-                        MediumTextures.Add(tDetails.texture);
-
-                    if (tDetails.texture.width < 512)
-                        SmallTextures.Add(tDetails.texture);
-                    GUILayout.EndHorizontal();
-                    GUILayout.EndVertical();
-
-                }
-
-                else if (!tDetails.isCubeMap)
-                {
-                    GUILayout.BeginHorizontal();
-                    GUILayout.Label("Import Setting N/A", GUILayout.Width(260));
-                    GUILayout.EndHorizontal();
-                }
-                else
-                {
-                    GUILayout.BeginHorizontal();
-                    GUILayout.Label("Import Setting: N/A", GUILayout.Width(260));
-                    GUILayout.EndHorizontal();
-                }
-            }
-            else
-            {
-                GUILayout.BeginHorizontal();
-                GUILayout.Label("\n\n\nTexture Import Setting N/A", GUILayout.Width(300));
-                GUILayout.EndHorizontal();
-            }
-            
-
-            
-
-
-       
-
-            GUILayout.EndHorizontal();
-
-        }
-
-
-            EditorGUILayout.Space();
-            GUILayout.BeginHorizontal();
-
-        if (GUILayout.Button("Turn on Mipmap Stream", GUILayout.Width(250)))
-        {
-            foreach (TextureDetails tDetails in ActiveTextures)
-            {
-                Texture tex = tDetails.texture;
-                string textureAssetPath = AssetDatabase.GetAssetPath(tex);
-                TextureImporter textureImporterSetting = AssetImporter.GetAtPath(textureAssetPath) as TextureImporter;
-                if (textureImporterSetting != null)
-                {
-                    if (!textureImporterSetting.streamingMipmaps)
-                    {
-                        textureImporterSetting.streamingMipmaps = true;
-                        AssetDatabase.ImportAsset(textureAssetPath, ImportAssetOptions.ForceUpdate);
-                    }
-                }
-            }
-        }
-
-
-        if (GUILayout.Button("Turn off Mipmap Stream", GUILayout.Width(250)))
-        {
-            foreach (TextureDetails tDetails in ActiveTextures)
-            {
-                Texture tex = tDetails.texture;
-                string textureAssetPath = AssetDatabase.GetAssetPath(tex);
-                TextureImporter textureImporterSetting = AssetImporter.GetAtPath(textureAssetPath) as TextureImporter;
-                if (textureImporterSetting != null)
-                {
-                    if (textureImporterSetting.streamingMipmaps)
-                    {
-                        textureImporterSetting.streamingMipmaps = false;
-                        AssetDatabase.ImportAsset(textureAssetPath, ImportAssetOptions.ForceUpdate);
-                    }
-                }
-            }
-        }
-
-        EditorGUILayout.EndHorizontal();
-        
-
-        EditorGUILayout.EndScrollView();
+		EditorGUILayout.EndScrollView();
 	}
 
-    void selectAll()
+	void selectAll()
     {
         switch (ActiveInspectType)
         {
@@ -800,9 +591,6 @@ public class AdvancedResourceChecker : EditorWindow {
             case InspectType.Meshes:
                 ListMeshes();
                 break;
-            case InspectType.Missing:
-                ListMissing();
-                break;
         }
     }
 
@@ -811,132 +599,253 @@ public class AdvancedResourceChecker : EditorWindow {
     {
         materialListScrollPos = EditorGUILayout.BeginScrollView(materialListScrollPos);
 
-    
-        GUILayout.BeginHorizontal();
+		GUILayout.BeginHorizontal();
         if (GUILayout.Button("Sort By Shader", GUILayout.Width(200)))
         {
             SortMaterialShaderBrand();
             SortMaterialShader();
         }
-
-
-
         if (GUILayout.Button("Sort By Material", GUILayout.Width(200)))
         {
             SortMaterialName();
         }
         EditorGUILayout.EndHorizontal();
-        foreach (MaterialDetails tDetails in ActiveMaterials)
-        {
-            if (tDetails.material != null)
-            {
-                GUILayout.BeginHorizontal();
+		// Columns
+		float viewWidth = EditorGUIUtility.currentViewWidth;
+		float padding = 20f;
+		int totalColumns = 5;
+		float columnWidth = (viewWidth - ThumbnailWidth - padding) / (totalColumns - 1);
 
-                GUILayout.Box(AssetPreview.GetAssetPreview(tDetails.material), GUILayout.Width(ThumbnailWidth), GUILayout.Height(ThumbnailHeight));
+		foreach (MaterialDetails mat in ActiveMaterials)
+		{
+			if (mat.material == null) continue;
 
-                if (tDetails.instance == true)
-                    GUI.color = new Color(0.8f, 0.8f, defColor.b, 1.0f);
-                if (tDetails.isgui == true)
-                    GUI.color = new Color(defColor.r, 0.95f, 0.8f, 1.0f);
-                if (tDetails.isSky)
-                    GUI.color = new Color(0.9f, defColor.g, defColor.b, 1.0f);
-                if (GUILayout.Button(tDetails.material.name, GUILayout.Width(150)))
-                {
-                    SelectObject(tDetails.material, ctrlPressed);
-                }
-                GUI.color = defColor;
+			GUILayout.BeginHorizontal();
 
-                string shaderLabel = tDetails.material.shader != null ? tDetails.material.shader.name : "no shader";
+			// Column 1: Thumbnail
+			GUILayout.Box(AssetPreview.GetAssetPreview(mat.material), GUILayout.Width(ThumbnailWidth), GUILayout.Height(ThumbnailHeight));
 
-                string shaderShort = GetShaderName(shaderLabel);
+			// Column 2: Material Name Only
+			GUILayout.BeginVertical(GUILayout.Width(columnWidth));
 
-                string shaderOrigin = GetShaderOrigin(shaderLabel, '/');
+			// Material name button
+			if (GUILayout.Button(mat.material.name, GUILayout.Width(columnWidth)))
+			{
+				SelectObject(mat.material, ctrlPressed);
+			}
 
-
-                tDetails.shaderName = shaderShort;
-                tDetails.shaderBrand = shaderOrigin;
-
-                GUILayout.Label(shaderOrigin, GUILayout.Width(70));
-                GUILayout.Label(shaderShort, GUILayout.Width(170));
-                string GPUInstancingBoolean = tDetails.material.enableInstancing ? "O" : "X";
-
-                if (GUILayout.Button("GPU Instancing:   " + GPUInstancingBoolean, GUILayout.Width(150)))
-                {
-                    tDetails.material.enableInstancing = !tDetails.material.enableInstancing;
-                }
-                GUILayout.Label(" ", GUILayout.Width(20));
-                if (GUILayout.Button((tDetails.FoundInRenderers.Count + tDetails.FoundInGraphics.Count) + " GO", GUILayout.Width(50)))
-                {
-                    List<Object> FoundObjects = new List<Object>();
-                    foreach (Renderer renderer in tDetails.FoundInRenderers) FoundObjects.Add(renderer.gameObject);
-                    foreach (Graphic graphic in tDetails.FoundInGraphics) FoundObjects.Add(graphic.gameObject);
-                    SelectObjects(FoundObjects, ctrlPressed);
-                }
-
-                GUILayout.Label("Render Queue: " + tDetails.material.renderQueue.ToString());
-                GUILayout.EndHorizontal();
-            }
-        }
-
-        EditorGUILayout.EndScrollView();
-    }
-    void ListShader()
-    {
-        shaderListScrollPos = EditorGUILayout.BeginScrollView(shaderListScrollPos);
-        printedMaterials = new HashSet<string>();
-
-        foreach (MaterialDetails tDetails in ActiveMaterials)
-        {
-            int count = 0;
-            if (tDetails.material != null)
-            {
-                GUILayout.BeginHorizontal();
-
-                tDetails.shaderName = tDetails.material.shader.name;
-                List<Material> FoundMaterials = new List<Material>();
+			GUILayout.EndVertical();
 
 
-                foreach (MaterialDetails material in ActiveMaterials)
-                {
-                    if (material.material.shader == tDetails.material.shader)
-                    {
-                        FoundMaterials.Add(material.material);
-                        count++;
-                    }
-                }
+			// Column 3: Shader Info (Origin + Short Name)
+			GUILayout.BeginVertical(GUILayout.Width(columnWidth));
+			string fullShaderName = mat.material.shader?.name ?? "None";
+			string origin = GetShaderOrigin(fullShaderName, '/');
+			string shortName = GetShaderName(fullShaderName);
+
+			GUILayout.Label($"Origin: {origin}", EditorStyles.miniLabel);
+			GUILayout.Label($"Shader: {shortName}", EditorStyles.miniLabel);
+			GUILayout.EndVertical();
 
 
-                if (!printedMaterials.Contains(tDetails.shaderName))
-                {
-                    printedMaterials.Add(tDetails.shaderName);
-                    if (GUILayout.Button(count.ToString() + " Materials", GUILayout.Width(100)))
-                    {
-                        SelectMaterials(FoundMaterials, ctrlPressed);
-                    }
-                    GUILayout.Label( " uses  ", GUILayout.Width(50));
-                    if (GUILayout.Button(GetShaderName(tDetails.shaderName), GUILayout.Width(250)))
-                    {
-                        SelectMaterials(FoundMaterials, ctrlPressed);
-                        {
-                            Shader shader = tDetails.material.shader;
-                            EditorGUIUtility.PingObject(shader);
-                            Selection.activeObject = shader;
-                        }
-                    }
-                }
+			// Column 4: Material Rendering Properties
+			GUILayout.BeginVertical(GUILayout.Width(columnWidth));
+
+			Material matRef = mat.material;
+
+			// Surface type based on render queue
+			string surface = "Surface: ";
+			if (matRef.renderQueue <= 2450) surface += "Opaque";
+			else if (matRef.renderQueue <= 2500) surface += "Alpha Cutoff";
+			else surface += "Transparent";
+
+			// Render face using _Cull
+			string face = "Render Face: ";
+			if (matRef.HasProperty("_Cull"))
+			{
+				int cull = (int)matRef.GetFloat("_Cull");
+				face += cull switch
+				{
+					0 => "Both Sides",
+					1 => "Front Only",
+					2 => "Back Only",
+					_ => "Unknown"
+				};
+			}
+			else
+			{
+				face += "Default";
+			}
+
+			// Combine into helpbox
+			string info = $"{surface}\n{face}\nQueue: {matRef.renderQueue}";
+			EditorGUILayout.HelpBox(info.Trim(), MessageType.None);
+
+			GUILayout.EndVertical();
 
 
 
-                GUILayout.EndHorizontal();
-            }
+			// Column 5: GameObject References
+			GUILayout.BeginVertical(GUILayout.Width(columnWidth));
+			int totalUsage = mat.FoundInRenderers.Count + mat.FoundInGraphics.Count;
+			if (GUILayout.Button($"Used In ({totalUsage}) Game Objects", GUILayout.Width(columnWidth)))
+			{
+				List<Object> found = new List<Object>();
+				mat.FoundInRenderers.ForEach(r => found.Add(r.gameObject));
+				mat.FoundInGraphics.ForEach(g => found.Add(g.gameObject));
+				SelectObjects(found, ctrlPressed);
+			}
+			GUILayout.EndVertical();
 
-        }
+			GUILayout.EndHorizontal();
+		}
 
-        EditorGUILayout.EndScrollView();
-    }
+		EditorGUILayout.EndScrollView();
+	}
+	// Add this at the top of your class
+	Dictionary<string, bool> shaderOriginFoldouts = new Dictionary<string, bool>();
+
+	void ListShader()
+	{
+		shaderListScrollPos = EditorGUILayout.BeginScrollView(shaderListScrollPos);
+		printedMaterials = new HashSet<string>();
+
+		var groupedByShader = ActiveMaterials
+			.Where(m => m.material != null && m.material.shader != null)
+			.GroupBy(m => m.material.shader);
+
+		// Group by shader origin (e.g., Universal, Custom)
+		var shadersByOrigin = groupedByShader
+			.GroupBy(g => GetShaderOrigin(g.Key.name, '/'))
+			.OrderBy(g => g.Key);
+
+		foreach (var originGroup in shadersByOrigin)
+		{
+			string origin = originGroup.Key;
+
+			// Initialize foldout state
+			if (!shaderOriginFoldouts.ContainsKey(origin))
+				shaderOriginFoldouts[origin] = true;
+
+			GUILayout.BeginVertical("box");
+			GUILayout.Space(4);
+
+			// Origin Header with Fold Toggle
+			GUILayout.BeginHorizontal();
+			shaderOriginFoldouts[origin] = GUILayout.Toggle(shaderOriginFoldouts[origin], shaderOriginFoldouts[origin] ? "▼" : "▶", "Label", GUILayout.Width(20));
+			GUILayout.Label($"Shader Origin: {origin}", EditorStyles.boldLabel);
+			GUILayout.EndHorizontal();
+
+			GUILayout.Space(4);
+
+			// If expanded, show shaders in this group
+			if (shaderOriginFoldouts[origin])
+			{
+				foreach (var shaderGroup in originGroup.OrderBy(g => GetShaderName(g.Key.name)))
+				{
+					Shader shader = shaderGroup.Key;
+					List<Material> materials = shaderGroup.Select(m => m.material).ToList();
+
+					GUILayout.BeginVertical("box");
+					GUILayout.Space(2);
+
+					// Shader Info Header
+					GUILayout.BeginHorizontal();
+
+					GUILayout.BeginVertical();
+					GUILayout.Label($"Shader: {GetShaderName(shader.name)}", EditorStyles.boldLabel);
+					GUILayout.EndVertical();
+
+					GUILayout.FlexibleSpace();
+
+					GUILayout.BeginVertical(GUILayout.Width(180));
+					GUILayout.Label($"Materials: {materials.Count}", EditorStyles.label);
+
+					GUILayout.BeginHorizontal();
+					if (GUILayout.Button("Select Shader"))
+					{
+						Selection.activeObject = shader;
+						EditorGUIUtility.PingObject(shader);
+					}
+					if (GUILayout.Button("Select Materials"))
+					{
+						SelectMaterials(materials, ctrlPressed);
+					}
+					GUILayout.EndHorizontal();
+					GUILayout.EndVertical();
+
+					GUILayout.EndHorizontal();
+					GUILayout.Space(4);
+
+					// Static analysis
+					EditorGUILayout.HelpBox(AnalyzeShaderStaticInfo(shader), MessageType.None);
+
+					GUILayout.Space(6);
+					GUILayout.EndVertical(); // Shader box
+				}
+			}
+
+			GUILayout.Space(4);
+			GUILayout.EndVertical(); // Origin box
+			GUILayout.Space(10);
+		}
+
+		EditorGUILayout.EndScrollView();
+	}
+
+	private string AnalyzeShaderStaticInfo(Shader shader)
+	{
+		int passCount = shader.passCount;
+
+		// Texture2D Properties
+		int textureCount = 0;
+		List<string> textureNames = new List<string>();
+
+		int propertyCount = ShaderUtil.GetPropertyCount(shader);
+		for (int i = 0; i < propertyCount; i++)
+		{
+			if (ShaderUtil.GetPropertyType(shader, i) == ShaderUtil.ShaderPropertyType.TexEnv)
+			{
+				string propName = ShaderUtil.GetPropertyName(shader, i);
+
+				// Filter out internal/unwanted texture properties
+				if (propName.Contains("unity") || propName.ToLower().Contains("lightmap") || propName.Length > 30)
+					continue;
+
+				textureCount++;
+				textureNames.Add(propName);
+			}
+		}
 
 
-    public static string GetShaderName(string fullShaderName)
+		// Keywords
+		string[] keywords = shader.keywordSpace.keywords.Select(k => k.name).ToArray();
+		int multiCompileCount = keywords.Count(k => k.Contains("shader_feature") || k.Contains("multi_compile"));
+
+		// Risk Indicators
+		string riskText = "";
+
+		riskText += $"Pass Count: {passCount} ";
+		riskText += passCount > 2 ? "⚠️ Moderate\n" : "✅ Low\n";
+
+		riskText += $"Texture2D Properties: {textureCount} ";
+		riskText += textureCount > 3 ? "⚠️ Moderate\n" : "✅ Low\n";
+
+		riskText += $"Keywords: {keywords.Length} ";
+		riskText += keywords.Length > 10 ? "⚠️ High (many defines)\n" : "✅ Low\n";
+
+		// Texture list output
+		string texList = textureNames.Count > 0
+			? $"Used Texture Props ({textureNames.Count}): " + string.Join(", ", textureNames)
+			: "No visible texture properties";
+
+		return texList + "\n\n" + riskText;
+	}
+
+
+
+
+	public static string GetShaderName(string fullShaderName)
     {
         int lastSlashIndex = fullShaderName.LastIndexOf('/');
         if (lastSlashIndex >= 0 && lastSlashIndex < fullShaderName.Length - 1)
@@ -967,81 +876,248 @@ public class AdvancedResourceChecker : EditorWindow {
         
     }
 
-    void ListMeshes()
+	void ListMeshes()
 	{
 		meshListScrollPos = EditorGUILayout.BeginScrollView(meshListScrollPos);
+		GUILayout.Space(8);
 
+		// ────── STATIC MESHES ──────
+		GUILayout.Label("STATIC MESHES", EditorStyles.boldLabel);
 		foreach (MeshDetails tDetails in ActiveMeshDetails)
-		{			
-			if (tDetails.mesh!=null)
-			{
-				GUILayout.BeginHorizontal ();
-				string name = tDetails.mesh.name;
-				if (name == null || name.Count() < 1)
-					name = tDetails.FoundInMeshFilters[0].gameObject.name;
-				if (tDetails.instance == true)
-					GUI.color = new Color (0.8f, 0.8f, defColor.b, 1.0f);
-				if(GUILayout.Button(name,GUILayout.Width(150)))
-				{
-					SelectObject(tDetails.mesh,ctrlPressed);
-				}
-				GUI.color = defColor;
-				string sizeLabel=""+tDetails.mesh.vertexCount+" vert";
+		{
+			if (tDetails.mesh == null || tDetails.FoundInMeshFilters.Count == 0) continue;
 
-				GUILayout.Label (sizeLabel,GUILayout.Width(100));
-
-                string IsFBX = CheckIfFromFBX(tDetails.mesh) ? "FBX" : "Not FBX";
-                GUILayout.Label("  " + IsFBX, GUILayout.Width(100));
-
-                if (GUILayout.Button(tDetails.FoundInMeshFilters.Count + " GO",GUILayout.Width(50)))
-				{
-					List<Object> FoundObjects=new List<Object>();
-					foreach (MeshFilter meshFilter in tDetails.FoundInMeshFilters) FoundObjects.Add(meshFilter.gameObject);
-					SelectObjects(FoundObjects,ctrlPressed);
-				}
-
-                GUILayout.Label("Export as ", GUILayout.Width(60));
-
-                if (GUILayout.Button("FBX", GUILayout.Width(35)))
-                {
-#if UNITY_EDITOR
-                    Mesh mesh = tDetails.mesh;
-                        if (mesh != null)
-                        {
-                            string meshPath = AssetDatabase.GetAssetPath(mesh);
-                            string folderPath = System.IO.Path.GetDirectoryName(meshPath);
-                            string meshName = mesh.name;
-                            string exportPath = folderPath + "/" + meshName + ".fbx";
-                            ModelExporter.ExportObject(exportPath, CreateTemporaryObjectWithMesh(mesh));
-                        }
-#else
-                    Debug.LogError("FBX Exporter plugin is required to export as FBX.");
-#endif
-                }
-
-                if (tDetails.FoundInSkinnedMeshRenderer.Count > 0) {
-					if (GUILayout.Button (tDetails.FoundInSkinnedMeshRenderer.Count + " skinned mesh GO", GUILayout.Width (140))) {
-						List<Object> FoundObjects = new List<Object> ();
-						foreach (SkinnedMeshRenderer skinnedMeshRenderer in tDetails.FoundInSkinnedMeshRenderer)
-							FoundObjects.Add (skinnedMeshRenderer.gameObject);
-						SelectObjects (FoundObjects, ctrlPressed);
-					}
-				} else {
-					GUI.color = new Color (defColor.r, defColor.g, defColor.b, 0.5f);
-					GUILayout.Label("   0 skinned mesh");
-					GUI.color = defColor;
-				}
-
-
-
-
-
-                GUILayout.EndHorizontal();	
-			}
+			GUILayout.BeginVertical("box");
+			DrawMeshRow(tDetails, isSkinned: false);
+			GUILayout.EndVertical();
+			GUILayout.Space(4);
 		}
-		EditorGUILayout.EndScrollView();		
+
+		GUILayout.Space(12);
+
+		// ────── SKINNED MESHES ──────
+		GUILayout.Label("SKINNED MESHES", EditorStyles.boldLabel);
+		foreach (MeshDetails tDetails in ActiveMeshDetails)
+		{
+			if (tDetails.mesh == null || tDetails.FoundInSkinnedMeshRenderer.Count == 0) continue;
+
+			GUILayout.BeginVertical("box");
+			DrawMeshRow(tDetails, isSkinned: true);
+			GUILayout.EndVertical();
+			GUILayout.Space(4);
+		}
+
+		EditorGUILayout.EndScrollView();
 	}
-    public static bool IsPartOfPrefab(GameObject gameObject)
+
+	void DrawMeshRow(MeshDetails tDetails, bool isSkinned)
+	{
+		GUILayout.BeginHorizontal();
+
+		// ── Mesh Name ──
+		GUILayout.BeginVertical();
+		GUILayout.Label("Mesh Name", EditorStyles.miniLabel);
+		string meshName = string.IsNullOrEmpty(tDetails.mesh.name)
+			? (tDetails.FoundInMeshFilters.Count > 0 ? tDetails.FoundInMeshFilters[0].gameObject.name : "Unnamed")
+			: tDetails.mesh.name;
+
+		if (GUILayout.Button(meshName, GUILayout.Width(200)))
+		{
+			SelectObject(tDetails.mesh, ctrlPressed);
+		}
+		GUILayout.EndVertical();
+
+		// ── Vertex Count ──
+		GUILayout.BeginVertical();
+		GUILayout.Label("Vertex Count", EditorStyles.miniLabel);
+		GUILayout.Label($"{tDetails.mesh.vertexCount} verts", GUILayout.Width(100));
+		GUILayout.EndVertical();
+
+		// ── Model Type ──
+		GUILayout.BeginVertical();
+		GUILayout.Label("Model Type", EditorStyles.miniLabel);
+		string modelType = CheckIfFromFBX(tDetails.mesh) ? "FBX" : "Not FBX";
+		GUILayout.Label(modelType, GUILayout.Width(80));
+		GUILayout.EndVertical();
+
+		// ── Scene Object Button ──
+		GUILayout.BeginVertical();
+		GUILayout.Label("Scene Objects", EditorStyles.miniLabel);
+		int count = isSkinned ? tDetails.FoundInSkinnedMeshRenderer.Count : tDetails.FoundInMeshFilters.Count;
+		if (GUILayout.Button($"{count} Objects", GUILayout.Width(110)))
+		{
+			var objects = isSkinned
+				? tDetails.FoundInSkinnedMeshRenderer.Select(r => (Object)r.gameObject).ToList()
+				: tDetails.FoundInMeshFilters.Select(f => (Object)f.gameObject).ToList();
+
+			SelectObjects(objects, ctrlPressed);
+		}
+		GUILayout.EndVertical();
+
+		// ── Export Button ──
+		GUILayout.BeginVertical();
+		GUILayout.Label("Export", EditorStyles.miniLabel);
+		if (GUILayout.Button("Export FBX", GUILayout.Width(90)))
+		{
+#if UNITY_EDITOR && ENABLE_FBX_EXPORTER
+		GameObject source = isSkinned && tDetails.FoundInSkinnedMeshRenderer.Count > 0
+			? tDetails.FoundInSkinnedMeshRenderer[0].gameObject
+			: (tDetails.FoundInMeshFilters.Count > 0 ? tDetails.FoundInMeshFilters[0].gameObject : null);
+
+		if (source != null)
+		{
+			string meshPath = AssetDatabase.GetAssetPath(tDetails.mesh);
+			string folder = Path.GetDirectoryName(meshPath);
+			string exportPath = $"{folder}/{source.name}_exported.fbx";
+			ModelExporter.ExportObject(exportPath, CreateTemporaryObjectWithMesh(tDetails.mesh));
+		}
+#endif
+		}
+		GUILayout.EndVertical();
+
+		// ── Prefab Reference ──
+		GameObject firstObj = isSkinned
+			? (tDetails.FoundInSkinnedMeshRenderer.Count > 0 ? tDetails.FoundInSkinnedMeshRenderer[0].gameObject : null)
+			: (tDetails.FoundInMeshFilters.Count > 0 ? tDetails.FoundInMeshFilters[0].gameObject : null);
+
+		if (firstObj != null && PrefabUtility.GetPrefabAssetType(firstObj) != PrefabAssetType.NotAPrefab)
+		{
+			GUILayout.BeginVertical();
+			GUILayout.Label("Prefab", EditorStyles.miniLabel);
+			if (GUILayout.Button("Select Prefab", GUILayout.Width(100)))
+			{
+				GameObject prefab = PrefabUtility.GetCorrespondingObjectFromSource(firstObj);
+				if (prefab != null)
+				{
+					Selection.activeObject = prefab;
+					EditorGUIUtility.PingObject(prefab);
+				}
+			}
+			GUILayout.EndVertical();
+		}
+
+		GUILayout.EndHorizontal();
+	}
+
+	void ListParticles()
+	{
+		Vector2 scrollPos = Vector2.zero;
+		scrollPos = EditorGUILayout.BeginScrollView(scrollPos);
+
+		ParticleSystem[] allParticles = FindObjects<ParticleSystem>();
+		GUILayout.Label($"Particle Systems Found: {allParticles.Length}", EditorStyles.boldLabel);
+		GUILayout.Space(8);
+
+		foreach (var ps in allParticles)
+		{
+			if (ps == null) continue;
+			var main = ps.main;
+			var emission = ps.emission;
+			var shape = ps.shape;
+
+			GUILayout.BeginVertical("box");
+
+			GUILayout.BeginHorizontal();
+
+			// Column 1: GameObject name
+			GUILayout.BeginVertical(GUILayout.Width(200));
+			GUILayout.Label("GameObject", EditorStyles.miniBoldLabel);
+			GUILayout.Label(ps.gameObject.name, GUILayout.Width(180));
+			GUILayout.EndVertical();
+
+			// Column 2: Core Settings
+			GUILayout.BeginVertical(GUILayout.Width(250));
+			GUILayout.Label("Settings", EditorStyles.miniBoldLabel);
+			GUILayout.Label($"Duration: {main.duration}s | Looping: {main.loop}");
+			GUILayout.Label($"Max Particles: {main.maxParticles}");
+			GUILayout.Label($"Start Lifetime: {main.startLifetime.constant}");
+			GUILayout.EndVertical();
+
+			// Column 3: Emission / Shape Info
+			GUILayout.BeginVertical(GUILayout.Width(220));
+			GUILayout.Label("Emission / Shape", EditorStyles.miniBoldLabel);
+			GUILayout.Label($"Rate: {(emission.enabled ? emission.rateOverTime.constant : 0)} / sec");
+			GUILayout.Label($"Shape: {(shape.enabled ? shape.shapeType.ToString() : "Disabled")}");
+			GUILayout.EndVertical();
+
+			// Column 4: Select Button
+			GUILayout.BeginVertical(GUILayout.Width(120));
+			GUILayout.Label("Action", EditorStyles.miniBoldLabel);
+			if (GUILayout.Button("Select GO"))
+			{
+				Selection.activeObject = ps.gameObject;
+				EditorGUIUtility.PingObject(ps.gameObject);
+			}
+			GUILayout.EndVertical();
+
+			GUILayout.EndHorizontal();
+			GUILayout.EndVertical();
+			GUILayout.Space(4);
+		}
+
+		EditorGUILayout.EndScrollView();
+	}
+
+
+	void ListAudios()
+	{
+		Vector2 scrollPos = Vector2.zero;
+		scrollPos = EditorGUILayout.BeginScrollView(scrollPos);
+
+		AudioSource[] audioSources = FindObjects<AudioSource>();
+
+		GUILayout.Label($"Audio Sources Found: {audioSources.Length}", EditorStyles.boldLabel);
+		GUILayout.Space(8);
+
+		foreach (var source in audioSources)
+		{
+			if (source == null) continue;
+
+			GUILayout.BeginVertical("box");
+
+			GUILayout.BeginHorizontal();
+
+			// Audio Clip
+			GUILayout.BeginVertical(GUILayout.Width(200));
+			GUILayout.Label("Audio Clip", EditorStyles.miniBoldLabel);
+			string clipName = source.clip ? source.clip.name : "(None)";
+			GUILayout.Label(clipName, GUILayout.Width(180));
+			GUILayout.EndVertical();
+
+			// Volume / Loop / PlayOnAwake
+			GUILayout.BeginVertical(GUILayout.Width(200));
+			GUILayout.Label("Settings", EditorStyles.miniBoldLabel);
+			GUILayout.Label($"Volume: {source.volume:F2}");
+			GUILayout.Label($"Loop: {(source.loop ? "Yes" : "No")}, PlayOnAwake: {(source.playOnAwake ? "Yes" : "No")}");
+			GUILayout.EndVertical();
+
+			// Spatial Blend / 3D
+			GUILayout.BeginVertical(GUILayout.Width(150));
+			GUILayout.Label("3D Settings", EditorStyles.miniBoldLabel);
+			string blend = source.spatialBlend == 0 ? "2D" : "3D";
+			GUILayout.Label($"Spatial Blend: {blend}");
+			GUILayout.Label($"Priority: {source.priority}");
+			GUILayout.EndVertical();
+
+			// Select GO Button
+			GUILayout.BeginVertical(GUILayout.Width(120));
+			GUILayout.Label("Object", EditorStyles.miniBoldLabel);
+			if (GUILayout.Button("Select GO"))
+			{
+				Selection.activeObject = source.gameObject;
+				EditorGUIUtility.PingObject(source.gameObject);
+			}
+			GUILayout.EndVertical();
+
+			GUILayout.EndHorizontal();
+			GUILayout.EndVertical();
+			GUILayout.Space(4);
+		}
+
+		EditorGUILayout.EndScrollView();
+	}
+
+	public static bool IsPartOfPrefab(GameObject gameObject)
     {
         PrefabAssetType prefabType = PrefabUtility.GetPrefabAssetType(gameObject);
         return prefabType != PrefabAssetType.NotAPrefab;
@@ -1073,31 +1149,6 @@ public class AdvancedResourceChecker : EditorWindow {
 
         return tempObject;
     }
-
-    void ListMissing(){
-		missingListScrollPos = EditorGUILayout.BeginScrollView(missingListScrollPos);
-		foreach (MissingGraphic dMissing in MissingObjects) {
-			GUILayout.BeginHorizontal ();
-			if (GUILayout.Button (dMissing.name, GUILayout.Width (150)))
-				SelectObject (dMissing.Object, ctrlPressed);
-			GUILayout.Label ("missing ", GUILayout.Width(48));
-			switch (dMissing.type) {
-			case "mesh":
-				GUI.color = new Color (0.8f, 0.8f, defColor.b, 1.0f);
-				break;
-			case "sprite":
-				GUI.color = new Color (defColor.r, 0.8f, 0.8f, 1.0f);
-				break;
-			case "material":
-				GUI.color = new Color (0.8f, defColor.g, 0.8f, 1.0f);
-				break;
-			}
-			GUILayout.Label (dMissing.type);
-			GUI.color = defColor;
-			GUILayout.EndHorizontal ();
-		}
-		EditorGUILayout.EndScrollView();
-	}
 
 	string FormatSizeString(int memSizeKB)
 	{
@@ -1462,7 +1513,8 @@ public class AdvancedResourceChecker : EditorWindow {
 								if(!ActiveMaterials.Contains(tMatDetails))
 									ActiveMaterials.Add(tMatDetails);
 							}
-							if (tMaterial.mainTexture)
+							if (tMaterial.HasProperty("_MainTex") && tMaterial.mainTexture != null)
+
 							{
 								var tSpriteTextureDetail = GetTextureDetail(tMaterial.mainTexture);
 								if (!ActiveTextures.Contains(tSpriteTextureDetail))
@@ -1529,8 +1581,25 @@ public class AdvancedResourceChecker : EditorWindow {
             return string.Compare(x.material.name, y.material.name, StringComparison.OrdinalIgnoreCase);
         }
     }
+	public class MeshNameComparer : IComparer<MeshDetails>
+	{
+		public int Compare(MeshDetails x, MeshDetails y)
+		{
+			// Compare the names of the objects
+			return string.Compare(x.FoundInMeshFilters[0].gameObject.name, y.FoundInMeshFilters[0].gameObject.name, StringComparison.OrdinalIgnoreCase);
+		}
+	}
+	public class MeshSizeComparer : IComparer<MeshDetails>
+	{
+		public int Compare(MeshDetails x, MeshDetails y)
+		{
+			// Compare the names of the objects
+			return string.Compare(x.mesh.name, y.mesh.name, StringComparison.OrdinalIgnoreCase);
+		}
+	}
 
-    public class TextureNameComparer : IComparer<TextureDetails>
+
+	public class TextureNameComparer : IComparer<TextureDetails>
     {
         public int Compare(TextureDetails x, TextureDetails y)
         {
@@ -1552,30 +1621,44 @@ public class AdvancedResourceChecker : EditorWindow {
     }
 
 
-    void SortTextureName()
-    {
-        ActiveTextures.Sort(new TextureNameComparer());
-        ActiveTextures = ActiveTextures.Distinct().ToList();
-    }
+	private TextureSortOption selectedSortOption = TextureSortOption.MemoryUsage;
 
-    void SortTextureSize()
-    {
-        ActiveTextures.Sort(delegate (TextureDetails details1, TextureDetails details2) { return details2.memSizeKB - details1.memSizeKB; });
-        ActiveTextures = ActiveTextures.Distinct().ToList();
-    }
+	void ApplyTextureSort()
+	{
+		Comparison<TextureDetails> comparison = null;
 
-    void SortTextureFormat()
-    {
-        ActiveTextures.Sort(new TextureFormatNameComparer());
-        ActiveTextures = ActiveTextures.Distinct().ToList();
-    }
+		switch (selectedSortOption)
+		{
+			case TextureSortOption.Name:
+				comparison = (a, b) => string.Compare(a.texture.name, b.texture.name, StringComparison.OrdinalIgnoreCase);
+				break;
+			case TextureSortOption.MemoryUsage:
+				comparison = (a, b) => a.memSizeKB.CompareTo(b.memSizeKB);
+				break;
+			case TextureSortOption.Resolution:
+				comparison = (a, b) =>
+					(a.texture.width * a.texture.height).CompareTo(b.texture.width * b.texture.height);
+				break;
+			case TextureSortOption.Format:
+				comparison = (a, b) => a.format.ToString().CompareTo(b.format.ToString());
+				break;
+			case TextureSortOption.AlphaChannel:
+				comparison = (a, b) => a.hasAlpha.CompareTo(b.hasAlpha);
+				break;
+			case TextureSortOption.TextureType:
+				comparison = (a, b) => a.texture.GetType().Name.CompareTo(b.texture.GetType().Name);
+				break;
+		}
 
-    void SortTextureAlpha()
-    {
-        ActiveTextures.Sort((a, b) => b.hasAlpha.CompareTo(a.hasAlpha));
-        ActiveTextures = ActiveTextures.Distinct().ToList();
-    }
-    void SortMaterialShader()
+		if (comparison != null)
+		{
+			ActiveTextures.Sort((a, b) => isSortAscending ? comparison(a, b) : comparison(b, a));
+			ActiveTextures = ActiveTextures.Distinct().ToList();
+		}
+	}
+
+
+	void SortMaterialShader()
     {
         ActiveMaterials.Sort(new ShaderNameComparer());
         ActiveMaterials = ActiveMaterials.Distinct().ToList();
@@ -1592,7 +1675,17 @@ public class AdvancedResourceChecker : EditorWindow {
         ActiveMaterials = ActiveMaterials.Distinct().ToList();
     }
 
-    private void CheckButtonSpriteState(Button button, Sprite sprite) 
+	void SortMeshName()
+    {
+		ActiveMeshDetails.Sort(new MeshNameComparer());
+		ActiveMeshDetails = ActiveMeshDetails.Distinct().ToList();
+	}
+	void SortMeshSize()
+	{
+		ActiveMeshDetails.Sort(delegate (MeshDetails details1, MeshDetails details2) { return details2.mesh.vertexCount - details1.mesh.vertexCount; });
+		ActiveMeshDetails = ActiveMeshDetails.Distinct().ToList();
+	}
+	private void CheckButtonSpriteState(Button button, Sprite sprite) 
 	{
 		if (sprite == null) return;
 		

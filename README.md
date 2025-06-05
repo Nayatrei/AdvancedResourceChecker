@@ -1,6 +1,7 @@
 # AdvancedResourceChecker
 Made upgrade version of Unity's Resource Checker
 Advanced Resource Checker
+![image](https://github.com/user-attachments/assets/0d6178df-a503-4ffd-8bf0-7974b65df0a2)
 
 Advanced Resource Checker is Resource Checker tool with some new additional features
 

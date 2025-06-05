@@ -1,5 +1,4 @@
 # AdvancedResourceChecker
-Made upgrade version of Unity's Resource Checker
 Advanced Resource Checker
 
 

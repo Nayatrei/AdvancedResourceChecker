@@ -201,16 +201,36 @@ public class AdvancedResourceChecker : EditorWindow {
 
 	void OnGUI ()
 	{
+
+		GUIStyle headerStyle = new GUIStyle(EditorStyles.largeLabel)
+		{
+			fontSize = 16,
+			fontStyle = FontStyle.Bold,
+			alignment = TextAnchor.MiddleCenter // Center the text
+		};
+		headerStyle.normal.textColor = Color.red;
+		headerStyle.margin = new RectOffset(0, 0, 10, 10); // Adjust spacing as needed
+
+		GUILayout.BeginVertical("box");
+		{
+			GUILayout.Label("Advanced Resource Checker", headerStyle);
+		}
+		GUILayout.EndVertical();
+
 		defColor = GUI.color;
+		GUILayout.BeginHorizontal();
 		IncludeDisabledObjects = GUILayout.Toggle(IncludeDisabledObjects, "Include disabled objects", GUILayout.Width(300));
 		IncludeSpriteAnimations = GUILayout.Toggle(IncludeSpriteAnimations, "Look in sprite animations", GUILayout.Width(300));
+		GUILayout.EndHorizontal();
+		GUILayout.BeginHorizontal();
 		GUI.color = new Color (0.8f, 0.8f, 1.0f, 1.0f);
 		IncludeScriptReferences = GUILayout.Toggle(IncludeScriptReferences, "Look in behavior fields", GUILayout.Width(300));
 		GUI.color = new Color (1.0f, 0.95f, 0.8f, 1.0f);
 		IncludeGuiElements = GUILayout.Toggle(IncludeGuiElements, "Look in GUI elements", GUILayout.Width(300));
+		GUILayout.EndHorizontal();
 		GUI.color = defColor;
 		GUILayout.BeginArea(new Rect(position.width-85,5,100,85));
-		if (GUILayout.Button("Calculate",GUILayout.Width(80), GUILayout.Height(40)))
+		if (GUILayout.Button("Scan",GUILayout.Width(80), GUILayout.Height(40)))
 			CheckResources();
 		if (GUILayout.Button("CleanUp",GUILayout.Width(80), GUILayout.Height(20)))
 			Resources.UnloadUnusedAssets();
@@ -980,11 +1000,17 @@ public class AdvancedResourceChecker : EditorWindow {
 			? (tDetails.FoundInSkinnedMeshRenderer.Count > 0 ? tDetails.FoundInSkinnedMeshRenderer[0].gameObject : null)
 			: (tDetails.FoundInMeshFilters.Count > 0 ? tDetails.FoundInMeshFilters[0].gameObject : null);
 
-		if (firstObj != null && PrefabUtility.GetPrefabAssetType(firstObj) != PrefabAssetType.NotAPrefab)
+		// ── Prefab Reference ──
+		GUILayout.BeginVertical();
+		GUILayout.Label("Prefab", EditorStyles.miniLabel);
+
+		bool hasPrefab = firstObj != null && PrefabUtility.GetPrefabAssetType(firstObj) != PrefabAssetType.NotAPrefab;
+
+		// 버튼 항상 그리고 상태만 조절
+		GUI.enabled = hasPrefab;
+		if (GUILayout.Button("Select Prefab", GUILayout.Width(100)))
 		{
-			GUILayout.BeginVertical();
-			GUILayout.Label("Prefab", EditorStyles.miniLabel);
-			if (GUILayout.Button("Select Prefab", GUILayout.Width(100)))
+			if (hasPrefab)
 			{
 				GameObject prefab = PrefabUtility.GetCorrespondingObjectFromSource(firstObj);
 				if (prefab != null)
@@ -993,8 +1019,11 @@ public class AdvancedResourceChecker : EditorWindow {
 					EditorGUIUtility.PingObject(prefab);
 				}
 			}
-			GUILayout.EndVertical();
 		}
+		GUI.enabled = true;
+
+		GUILayout.EndVertical();
+
 
 		GUILayout.EndHorizontal();
 	}
